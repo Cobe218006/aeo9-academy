@@ -1,12 +1,13 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
+import { buildEvidence, evidenceText } from "../lib/evidence";
 import { screenPassword, screenMessage } from "../lib/password-security";
 import { roadmapCourses, roadmapSteps, nextBestAction, remainingMinutes, weeksToFinish } from "../lib/roadmap";
 import { supabase } from "../lib/supabase";
 
 type A = any;
 type Line = { role: "user" | "assistant"; content: string };
-const TABS = ["Overview", "Learn", "Sales Lab", "Portfolio", "Credentials"];
+const TABS = ["Overview", "Learn", "Sales Lab", "Portfolio", "Hiring View", "Credentials"];
 const LEVELS: [string, number][] = [["Novice", 0], ["Apprentice", 50], ["Practitioner", 150], ["Specialist", 300]];
 const SCEN: [string, string][] = [["hvac", "HVAC company owner"], ["freight", "Freight broker owner"], ["saas", "B2B SaaS marketing VP"], ["ecommerce", "E-commerce founder"]];
 
@@ -49,6 +50,7 @@ export default function Home() {
   const [pt, setPt] = useState(""); const [pp, setPp] = useState(""); const [pa, setPa] = useState(""); const [pr, setPr] = useState(""); const [pu, setPu] = useState(""); const [pmsg, setPmsg] = useState("");
   // verify
   const [lp, setLp] = useState<A>(null); const [lpLoaded, setLpLoaded] = useState(false); const [lpErr, setLpErr] = useState(""); const [passed, setPassed] = useState<Record<string, boolean>>({}); const [ob, setOb] = useState<A>({ goal: "", experience: "", focus: "", weekly: 120 }); const [editPlan, setEditPlan] = useState(false);
+  const [attempts, setAttempts] = useState<A[]>([]); const [sessions, setSessions] = useState<A[]>([]); const [copyMsg, setCopyMsg] = useState("");
   const [vc, setVc] = useState(""); const [vres, setVres] = useState<A>(null);
 
   useEffect(() => {
@@ -60,9 +62,13 @@ export default function Home() {
     supabase.from("courses").select("*").order("sort_order").then(({ data, error }) => { if (error) setLoadErr("Could not load courses."); else setCourses(data || []); });
     supabase.from("lessons").select("*").order("sort_order").then(({ data }) => setLessons(data || []));
   }, []);
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get("verify");
+    if (q && /^[A-Za-z0-9_-]{4,64}$/.test(q)) { setTab("Credentials"); setVc(q); verify(q); }
+  }, []);
   const uid = session?.user?.id;
   async function loadMine() {
-    if (!uid) { setProfile(null); setDone({}); setCreds([]); setProjects([]); setLp(null); setLpLoaded(false); setPassed({}); return; }
+    if (!uid) { setProfile(null); setDone({}); setCreds([]); setProjects([]); setLp(null); setLpLoaded(false); setPassed({}); setAttempts([]); setSessions([]); return; }
     const [p, lp, c, pj] = await Promise.all([
       supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
       supabase.from("lesson_progress").select("lesson_id").eq("user_id", uid),
@@ -72,10 +78,12 @@ export default function Home() {
     if (p.error || lp.error) setLoadErr("Some of your data could not be loaded. Refresh to retry."); else setLoadErr("");
     setProfile(p.data); const d: Record<string, boolean> = {}; (lp.data || []).forEach((r: A) => (d[r.lesson_id] = true)); setDone(d);
     setCreds(c.data || []); setProjects(pj.data || []);
-    const [lpr, qa] = await Promise.all([
+    const [lpr, qa, rs] = await Promise.all([
       supabase.from("learner_profiles").select("*").eq("user_id", uid).maybeSingle(),
-      supabase.from("quiz_attempts").select("lesson_id,score").eq("user_id", uid),
+      supabase.from("quiz_attempts").select("lesson_id,score,created_at").eq("user_id", uid),
+      supabase.from("roleplay_sessions").select("score,scenario,created_at").eq("user_id", uid),
     ]);
+    setAttempts(qa.data || []); setSessions(rs.data || []);
     if (lpr.error) setLpErr(/PGRST205|42P01|schema cache/.test(lpr.error.code + " " + lpr.error.message) ? "The learning plan is not enabled on this site yet." : "Your learning plan could not be loaded."); else setLpErr("");
     setLp(lpr.data); setLpLoaded(true);
     const ps: Record<string, boolean> = {}; (qa.data || []).forEach((r: A) => { if (r.score >= 70) ps[r.lesson_id] = true; }); setPassed(ps);
@@ -94,6 +102,11 @@ export default function Home() {
     const steps = roadmapSteps(cs, lessons as A, done, passed);
     return { cs, steps, action: nextBestAction(steps, lp.focus), mins: remainingMinutes(steps) };
   }, [lp, courses, lessons, done, passed]);
+  const ev = useMemo(() => buildEvidence({ name: profile?.full_name || session?.user?.email || "", courses, lessons, done, attempts, sessions, projects, creds }), [profile, session, courses, lessons, done, attempts, sessions, projects, creds]);
+  async function copyEvidence() {
+    const t = evidenceText(ev);
+    try { await navigator.clipboard.writeText(t); setCopyMsg("Summary copied."); } catch { setCopyMsg("Could not copy automatically. Use Print or select the text."); }
+  }
   function goAction() {
     if (!plan) return; const a = plan.action;
     if (a.kind === "lesson" || a.kind === "quiz") { setTab("Learn"); setCourse(null); openLesson(a.step.lesson); }
@@ -172,8 +185,8 @@ export default function Home() {
     setPt(""); setPp(""); setPa(""); setPr(""); setPu(""); setPmsg("Saved."); loadMine();
   }
   async function delProject(id: string) { const { error } = await supabase.from("portfolio_projects").delete().eq("id", id).eq("user_id", uid); if (error) setPmsg("Could not delete."); else loadMine(); }
-  async function verify() {
-    setVres(null); const code = vc.trim(); if (!code) return;
+  async function verify(c?: string) {
+    setVres(null); const code = (typeof c === "string" ? c : vc).trim(); if (!code || code.length > 64) return;
     const { data, error } = await supabase.from("public_credential_verification").select("*").eq("verification_code", code).maybeSingle();
     setVres(error ? { err: "Could not check that code." } : data ? { ok: data } : { none: true });
   }
@@ -228,6 +241,7 @@ export default function Home() {
           </div>
         )}
         {session && lpErr && <div className="notice err" role="status">{lpErr}</div>}
+        {!session && <div className="card"><h3>For hiring teams</h3><p>Each learner has a summary that separates what the platform recorded, what an AI coach scored, what the learner wrote, and what a human verified. No XP or rankings.</p><p className="mut">Have a verification code from a candidate? Open the Credentials tab to check it. Credentials are issued only after a human reviews practical work.</p></div>}
         <div className="card"><h3>Learning tracks</h3>{courses.length === 0 ? <p className="mut">No published courses yet.</p> : courses.map((c) => { const ls = byCourse[c.id] || []; const d = ls.filter((l) => done[l.id]).length; return <div key={c.id} style={{ margin: "10px 0" }}><b>{c.title}</b> <span className="mut">{c.level} &middot; {ls.length} lessons{session ? " &middot; " + d + " done" : ""}</span><p className="mut">{c.description}</p></div>; })}</div>
       </>)}
 
@@ -263,8 +277,28 @@ export default function Home() {
         {projects.map((p) => <div key={p.id} className="card"><h3>{p.title}</h3><p><b>Problem:</b> {p.problem}</p><p><b>Action:</b> {p.action}</p><p><b>Result:</b> {p.result}</p>{p.artifact_url && /^https:\/\//i.test(p.artifact_url) && <p><a style={{ color: "var(--gold)" }} href={p.artifact_url} target="_blank" rel="noopener noreferrer">Evidence link</a></p>}<p className="mut">Self-reported. Not independently verified.</p><button className="ghost" onClick={() => delProject(p.id)}>Delete</button></div>)}
         {projects.length === 0 && <p className="mut">No projects yet.</p>}</>))}
 
+      {tab === "Hiring View" && (!session ? <div className="card"><p>Sign in on the Overview tab to see your evidence summary.</p></div> : (
+        <div className="card evidence"><h2>Hiring view</h2>
+          <p className="mut">What a hiring manager can check about {ev.name}, as of {ev.generated}. Every line says how it was produced. XP, levels and rankings are left out on purpose.</p>
+          <div className="stat">
+            <div><b>{ev.lessons.done} / {ev.lessons.total}</b>lessons completed<br /><span className="tag">system-recorded</span></div>
+            <div><b>{ev.quizzes.passed} / {ev.quizzes.attempted}</b>knowledge checks passed (70%+)<br /><span className="tag">auto-graded</span></div>
+            <div><b>{ev.sales.sessions ? ev.sales.avg + " avg" : "None"}</b>Sales Lab practice{ev.sales.sessions ? " (" + ev.sales.sessions + " sessions, best " + ev.sales.best + ")" : ""}<br /><span className="tag">AI-generated practice</span></div>
+            <div><b>{ev.verified.length}</b>verified credentials<br /><span className="tag">human-reviewed</span></div>
+          </div>
+          <h3 style={{ marginTop: 16 }}>Coursework</h3>
+          {ev.courses.length === 0 ? <p className="mut">No coursework recorded yet.</p> : ev.courses.map((c) => <p key={c.title}><b>{c.title}</b> <span className="mut">{c.level} &middot; {c.lessonsDone}/{c.lessonsTotal} lessons &middot; {c.quizzesPassed} quizzes passed</span></p>)}
+          <h3 style={{ marginTop: 16 }}>Portfolio <span className="tag">self-reported</span></h3>
+          {ev.portfolio.length === 0 ? <p className="mut">No portfolio items yet. Add a problem, the action taken and a measured result in the Portfolio tab.</p> : ev.portfolio.map((p, i) => <div key={i} className="notice"><b>{p.title}</b><br />Problem: {p.problem}<br />Action: {p.action}<br />Result: {p.result}{p.link && <><br /><a href={p.link} target="_blank" rel="noopener noreferrer">Evidence link</a></>}</div>)}
+          <h3 style={{ marginTop: 16 }}>Verified credentials</h3>
+          {ev.verified.length === 0 ? <p className="mut">None yet. A credential is issued only after a human reviews practical work.{ev.pending ? " " + ev.pending + " record(s) are in review or not verified." : ""}</p> : ev.verified.map((c) => <div key={c.code} className="notice"><b>{c.title}</b> &middot; {c.issuer} &middot; issued {c.issued}<br />Check it independently: <a href={"/?verify=" + encodeURIComponent(c.code)}>verification link</a> (code {c.code})</div>)}
+          <div className="row noprint" style={{ marginTop: 14 }}><button onClick={copyEvidence}>Copy summary</button><button className="ghost" onClick={() => window.print()}>Print or save as PDF</button></div>
+          {copyMsg && <p className="notice noprint" role="status">{copyMsg}</p>}
+          <p className="mut">Generated from this account&rsquo;s own data. Not a licence and not an employment guarantee.</p>
+        </div>))}
+
       {tab === "Credentials" && (<>
-        <div className="card"><h2>Verify a credential</h2><p className="mut">Enter a verification code to check its status.</p><label htmlFor="vc">Verification code</label><input id="vc" value={vc} onChange={(e) => setVc(e.target.value)} /><button onClick={verify}>Check</button>
+        <div className="card"><h2>Verify a credential</h2><p className="mut">Enter a verification code to check its status.</p><label htmlFor="vc">Verification code</label><input id="vc" value={vc} onChange={(e) => setVc(e.target.value)} /><button onClick={() => verify()}>Check</button>
           {vres?.ok && <div className="notice"><b>{vres.ok.title}</b> &middot; {vres.ok.issuer}<br />Status: {vres.ok.status}. Issued {new Date(vres.ok.issued_at).toLocaleDateString()}.</div>}{vres?.none && <p className="notice err">No credential matches that code.</p>}{vres?.err && <p className="notice err">{vres.err}</p>}</div>
         {session && <div className="card"><h2>Your credentials</h2>{creds.length === 0 ? <p className="mut">None yet. Credentials are issued after an instructor reviews your practical work. Lesson completion and XP alone do not earn one.</p> : creds.map((c) => <div key={c.id} className="notice"><b>{c.title}</b> &middot; {c.issuer}<br />Status: {c.status}. Verification code: {c.verification_code}</div>)}</div>}
       </>)}

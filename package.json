@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --experimental-strip-types tests/roadmap.test.ts && node --experimental-strip-types tests/password-security.test.ts"
+    "test": "node --experimental-strip-types tests/roadmap.test.ts && node --experimental-strip-types tests/password-security.test.ts && node --experimental-strip-types tests/evidence.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",

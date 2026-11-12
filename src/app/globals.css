@@ -24,3 +24,14 @@ label{font-size:14px;color:var(--mut)}
 .opt{display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid var(--line);border-radius:10px;margin:6px 0}.opt input{width:auto;margin:3px 0 0}
 .lesson h1,.lesson h2,.lesson h3{color:var(--gold2)}.lesson ul{padding-left:20px}
 footer{color:var(--mut);font-size:12px;text-align:center;padding:24px 0}
+a{color:var(--gold2)}
+:focus-visible{outline:2px solid var(--gold2);outline-offset:2px}
+.tag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--gold2);border:1px solid var(--line);border-radius:99px;padding:1px 8px;margin-top:4px}
+@media (max-width:420px){nav.tabs button{font-size:11px;padding:10px 0}}
+@media print{
+  html,body{background:#fff;color:#000}
+  nav.tabs,header.top,footer,.noprint{display:none!important}
+  .wrap{max-width:none;padding:0}
+  .card,.notice,.stat div{background:#fff;color:#000;border:1px solid #bbb;break-inside:avoid}
+  h2,h3,.stat b,.tag,a{color:#000}.mut{color:#444}
+}
