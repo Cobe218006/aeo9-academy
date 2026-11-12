@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
+import { roadmapCourses, roadmapSteps, nextBestAction, remainingMinutes, weeksToFinish } from "../lib/roadmap";
 import { supabase } from "../lib/supabase";
 
 type A = any;
@@ -46,6 +47,7 @@ export default function Home() {
   // portfolio
   const [pt, setPt] = useState(""); const [pp, setPp] = useState(""); const [pa, setPa] = useState(""); const [pr, setPr] = useState(""); const [pu, setPu] = useState(""); const [pmsg, setPmsg] = useState("");
   // verify
+  const [lp, setLp] = useState<A>(null); const [lpLoaded, setLpLoaded] = useState(false); const [lpErr, setLpErr] = useState(""); const [passed, setPassed] = useState<Record<string, boolean>>({}); const [ob, setOb] = useState<A>({ goal: "", experience: "", focus: "", weekly: 120 }); const [editPlan, setEditPlan] = useState(false);
   const [vc, setVc] = useState(""); const [vres, setVres] = useState<A>(null);
 
   useEffect(() => {
@@ -59,7 +61,7 @@ export default function Home() {
   }, []);
   const uid = session?.user?.id;
   async function loadMine() {
-    if (!uid) { setProfile(null); setDone({}); setCreds([]); setProjects([]); return; }
+    if (!uid) { setProfile(null); setDone({}); setCreds([]); setProjects([]); setLp(null); setLpLoaded(false); setPassed({}); return; }
     const [p, lp, c, pj] = await Promise.all([
       supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
       supabase.from("lesson_progress").select("lesson_id").eq("user_id", uid),
@@ -69,6 +71,33 @@ export default function Home() {
     if (p.error || lp.error) setLoadErr("Some of your data could not be loaded. Refresh to retry."); else setLoadErr("");
     setProfile(p.data); const d: Record<string, boolean> = {}; (lp.data || []).forEach((r: A) => (d[r.lesson_id] = true)); setDone(d);
     setCreds(c.data || []); setProjects(pj.data || []);
+    const [lpr, qa] = await Promise.all([
+      supabase.from("learner_profiles").select("*").eq("user_id", uid).maybeSingle(),
+      supabase.from("quiz_attempts").select("lesson_id,score").eq("user_id", uid),
+    ]);
+    if (lpr.error) setLpErr(/PGRST205|42P01|schema cache/.test(lpr.error.code + " " + lpr.error.message) ? "The learning plan is not enabled on this site yet." : "Your learning plan could not be loaded."); else setLpErr("");
+    setLp(lpr.data); setLpLoaded(true);
+    const ps: Record<string, boolean> = {}; (qa.data || []).forEach((r: A) => { if (r.score >= 70) ps[r.lesson_id] = true; }); setPassed(ps);
+  }
+  async function savePlan() {
+    if (!ob.goal || !ob.experience || !ob.focus) { setLpErr("Answer all three questions."); return; }
+    const w = Math.min(2400, Math.max(15, Math.round(Number(ob.weekly) || 0)));
+    const row = { user_id: uid, goal: ob.goal, experience: ob.experience, focus: ob.focus, weekly_minutes: w, updated_at: new Date().toISOString() };
+    const { error } = await supabase.from("learner_profiles").upsert(row, { onConflict: "user_id" });
+    if (error) { setLpErr("Could not save your plan. " + (error.message || "")); return; }
+    setLpErr(""); setEditPlan(false); await loadMine();
+  }
+  const plan = useMemo(() => {
+    if (!lp) return null;
+    const cs = roadmapCourses(courses as A, lp.focus, lp.experience);
+    const steps = roadmapSteps(cs, lessons as A, done, passed);
+    return { cs, steps, action: nextBestAction(steps, lp.focus), mins: remainingMinutes(steps) };
+  }, [lp, courses, lessons, done, passed]);
+  function goAction() {
+    if (!plan) return; const a = plan.action;
+    if (a.kind === "lesson" || a.kind === "quiz") { setTab("Learn"); setCourse(null); openLesson(a.step.lesson); }
+    else if (a.kind === "salesLab") setTab("Sales Lab"); else setTab("Portfolio");
+    window.scrollTo(0, 0);
   }
   useEffect(() => { loadMine(); }, [uid]);
 
@@ -167,6 +196,33 @@ export default function Home() {
             <p className="mut">XP measures practice and engagement. It is not proof of professional competence.</p>
             <button className="ghost" onClick={() => supabase.auth.signOut()}>Sign out</button></div>
         )}
+        {session && lpLoaded && (!lp || editPlan) && (
+          <div className="card"><h2>{lp ? "Update your plan" : "Set up your learning plan"}</h2>
+            <p className="mut">Three quick questions. They only shape the order of lessons and your next step. You can change them any time.</p>
+            <label htmlFor="ob-goal">What is your goal?</label>
+            <select id="ob-goal" value={ob.goal} onChange={(e) => setOb({ ...ob, goal: e.target.value })}><option value="">Choose one</option><option value="job">Get a job or promotion</option><option value="upskill">Upskill in my current role</option><option value="agency">Serve clients or run an agency</option><option value="sell">Sell better with AI search proof</option><option value="explore">Just exploring</option></select>
+            <label htmlFor="ob-exp">Your experience with SEO or AI search</label>
+            <select id="ob-exp" value={ob.experience} onChange={(e) => setOb({ ...ob, experience: e.target.value })}><option value="">Choose one</option><option value="new">New to it</option><option value="some">Some experience</option><option value="experienced">Experienced</option></select>
+            <label htmlFor="ob-focus">Where do you want to focus?</label>
+            <select id="ob-focus" value={ob.focus} onChange={(e) => setOb({ ...ob, focus: e.target.value })}><option value="">Choose one</option><option value="seo_aeo">AI search, AEO and GEO</option><option value="amazon">Amazon search</option><option value="python_ml">Python and machine learning</option><option value="sales">Selling with AI search</option><option value="all">Everything</option></select>
+            <label htmlFor="ob-min">Minutes you can study per week</label>
+            <input id="ob-min" type="number" min={15} max={2400} value={ob.weekly} onChange={(e) => setOb({ ...ob, weekly: e.target.value })} />
+            <button onClick={savePlan}>Save my plan</button>{lp && <button className="ghost" onClick={() => setEditPlan(false)}>Cancel</button>}
+          </div>
+        )}
+        {session && lp && plan && !editPlan && (
+          <div className="card"><h2>Your next step</h2>
+            <p><b>{plan.action.text}</b></p>
+            <button onClick={goAction}>{plan.action.kind === "lesson" ? "Open lesson" : plan.action.kind === "quiz" ? "Open quiz" : plan.action.kind === "salesLab" ? "Open Sales Lab" : "Open portfolio"}</button>
+            <h3 style={{ marginTop: 16 }}>Your roadmap</h3>
+            {plan.steps.length === 0 ? <p className="mut">No lessons are published for this focus yet. The Sales Lab and portfolio are open to you.</p> : <>
+              <p className="mut">{plan.steps.filter((s) => s.done).length} of {plan.steps.length} lessons done &middot; about {plan.mins} minutes of lesson reading left (about {weeksToFinish(plan.mins, lp.weekly_minutes)} week{weeksToFinish(plan.mins, lp.weekly_minutes) === 1 ? "" : "s"} at {lp.weekly_minutes} min/week). Estimate excludes practice and quizzes.</p>
+              {plan.cs.map((c) => { const ss = plan.steps.filter((s) => s.course.id === c.id); if (!ss.length) return null; return <div key={c.id} style={{ margin: "8px 0" }}><b>{c.title}</b> <span className="mut">{c.level}</span>{ss.map((s) => <div key={s.lesson.id} className="mut">{s.done ? (s.passed ? "✓ " : "◐ ") : "○ "}{s.lesson.title}{s.done && !s.passed ? " (quiz not passed yet)" : ""}</div>)}</div>; })}
+            </>}
+            <button className="ghost" onClick={() => { setOb({ goal: lp.goal, experience: lp.experience, focus: lp.focus, weekly: lp.weekly_minutes }); setEditPlan(true); }}>Change my plan</button>
+          </div>
+        )}
+        {session && lpErr && <div className="notice err" role="status">{lpErr}</div>}
         <div className="card"><h3>Learning tracks</h3>{courses.length === 0 ? <p className="mut">No published courses yet.</p> : courses.map((c) => { const ls = byCourse[c.id] || []; const d = ls.filter((l) => done[l.id]).length; return <div key={c.id} style={{ margin: "10px 0" }}><b>{c.title}</b> <span className="mut">{c.level} &middot; {ls.length} lessons{session ? " &middot; " + d + " done" : ""}</span><p className="mut">{c.description}</p></div>; })}</div>
       </>)}
 
