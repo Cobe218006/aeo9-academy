@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
+import { screenPassword, screenMessage } from "../lib/password-security";
 import { roadmapCourses, roadmapSteps, nextBestAction, remainingMinutes, weeksToFinish } from "../lib/roadmap";
 import { supabase } from "../lib/supabase";
 
@@ -109,6 +110,10 @@ export default function Home() {
     setBusy(true); setAuthMsg("");
     try {
       if (mode === "signup") {
+        setAuthMsg("Checking your password against known breaches...");
+        const screen = await screenPassword(password);
+        if (screen.status !== "safe") { setAuthMsg(screenMessage(screen)); setBusy(false); return; }
+        setAuthMsg("");
         const { data, error } = await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName } } });
         if (error) setAuthMsg(error.message); else if (!data.session) setAuthMsg("Account created. Check your email to confirm it, then sign in."); else setAuthMsg("");
       } else {
